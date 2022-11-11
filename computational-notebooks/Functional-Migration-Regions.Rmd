@@ -1,0 +1,810 @@
+---
+title: "Functional Migration Regions"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Migration Regions
+
+
+
+## Preliminaries
+
+Begin by loading the packages used in this seminar:
+```{r message = FALSE}
+library(circlize) # Circular Visualization
+library(dplyr) # A Grammar of Data Manipulation
+library(ggmap) # Spatial Visualization with ggplot2
+library(ggplot2) # Create Elegant Data Visualisations Using the Grammar of Graphics
+library(ggraph) # An Implementation of Grammar of Graphics for Graphs and Networks
+library(ggthemes) # Extra Themes, Scales and Geoms for 'ggplot2'
+library(here) # A Simpler Way to Find Your Files
+library(igraph) # Network Analysis and Visualization
+#library(leaflet) # Create Interactive Web Maps with the JavaScript 'Leaflet' Library
+library(plotly) # Create Interactive Web Graphics via 'plotly.js'
+#library(readr) # Read Rectangular Text Data
+library(sf) # Simple Features for R
+library(tibble)
+```
+
+In this notebook we will work with the example of domestic movements in Canada for the years 2006-2007, at the Census Division level. Load datasets:
+```{r}
+load(paste0(here::here(), "/data-inputs/canada_provinces.rda"))
+load(paste0(here::here(), "/data-inputs/cd_06_07.rda"))
+load(paste0(here::here(), "/data-inputs/cd_2006.rda"))
+```
+
+## Flows as graphs
+
+Displaying flows based on their size is a simple way of improving desire line plots. 
+
+An alternate way of representing flows is as graphs. In the form of a graph, origins and destinations become nodes (also called vertices), and the flows are links (also called edges) between them. Representation of flows as graphs has the advantage that they offers a battery of summary measures that we can borrow from social network analysis. Of interest are the measures of centrality, which are used to identify important nodes in a network.
+
+For this example we will use the `igraph` package.
+
+A graph object can be created in several different ways: from a matrix or from a list of incidence. Lists of incidence are more efficient from the perspective of memory, and they require three columns, one for the origin nodes, one for the destination nodes, and a third column for the flows. In the `igraph` package we can create a graph object from a list of incidence (essentially a dataframe) as follows:
+```{r}
+g <- cd_06_07 %>% 
+  dplyr::select(Origin_CDUID, Destination_CDUID, flow = All_total) %>%
+  graph_from_data_frame(directed = TRUE, vertices = NULL)
+```
+
+We will also identify the vertices, which in this case are CDs, by adding a label with the name of the province and the level of urbanization. Here, we use as levels of urbanization a selection of the largest Census Metropolitan Areas in Canada, and then a category for "Other/Non-urban", as follows:
+```{r}
+vertices <- cd_06_07 %>%
+  transmute(CDUID = Origin_CDUID, Province_by_CMA = paste0(Origin_Province_Name_Short, ":", Origin_CMANAME)) %>%
+  distinct()
+```
+
+This table shows the number of CDs in each class:
+```{r}
+table(vertices$Province_by_CMA)
+```
+
+It can be seen that Calgary is composed of three CDs, Edmonton of four, Toronto of 9, Ontario has 36 CDs in the "Other/Non-urban" category, and so on.
+
+Let us plot the CDs as nodes in a graph:
+```{r}
+plot(g, edge.color = NA, 
+     layout = as.matrix(select(cd_06_07, lng.origin, lat.origin)),
+     vertex.label = NA,
+     vertex.size = 4)
+```
+
+Once that we have converted the flows to a graph, we can explore them using social network tools.
+
+## Measures of centrality
+
+In social network analysis, measures of centrality are used to identify the most important nodes in a graph. Most important here is used only vaguely, since importance can be defined in different ways. We will explore three measures of centrality next.
+
+### Farness and Closeness
+
+A measure of centrality is closeness. A node is far away from another when the cost of reaching it is high. Farness measures the average cost of reaching every other node from a certain origin - or alternatively, the average cost of being reached from every other node. The inverse of farness is closeness, and this measure is defined as the inverse of the average length of the shortest paths to ("out") or from ("in") all the other vertices in the graph
+
+Farness:
+$$
+\text{farness} = \sum_{i\neq v}w_{iv}
+$$
+The shortest path "distance" between nodes $i$ and $v\neq i$.
+
+Closeness:
+$$
+\text{closeness} = \frac{1}{\sum_{i\neq v}d_{iv}}
+$$
+Define farness as the reciprocal of the flows, i.e., a region with small flow is far and vice-versa:
+$$
+d_{iv} = \frac{1}{f_{iv}}
+$$
+
+\noindent where $f_iv$ is the sum of the flows on the edges of the shortest path between $i$ and $v\neq i$.
+
+As a result, the closeness is the harmonic sum (or subcontrary sum) of the flows (related to the [harmonic mean](https://math.stackexchange.com/questions/3803312/why-is-the-harmonic-mean-called-the-subcontrary-mean)):
+$$
+\text{closeness} = \frac{1}{\frac{1}{f_{12}} + \frac{1}{f_{13}} + \frac{1}{f_{14}} + ...}
+$$
+
+
+```{r}
+# your code
+df <- data.frame(a = c(0, 0, 0, 0, 1, 3),
+                 b = c(1, 2, 3, 4, 2, 4),
+                 wt = c(100, 10, 200, 10, 150, 100),
+                 p1 = c("gray", "gray", "red", "gray", "gray", "red"),
+                 p2 = c("red", "gray", "gray", "gray", "red", "gray"))
+nod <- data.frame(node = c(0:4))
+pg <- graph_from_data_frame(d = df, 
+                            vertices = nod,
+                            directed = TRUE)
+```
+
+```{r}
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, edge.label = df$wt)
+```
+
+```{r}
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, edge.label = df$wt, edge.color = df$p1)
+```
+
+```{r}
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, edge.label = df$wt, edge.color = df$p2)
+```
+
+
+```{r}
+c_out <- closeness(pg, vids = V(pg), mode = "out", weights = (df$wt)^-1) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+c_out
+```
+
+Closeness out of node 0 is the harmonic sum of the flows:
+```{r}
+1/(1/100 + 1/100 + 1/150 + 1/200 + 1/200 + 1/100)
+```
+
+This is identical to the [_weighted_ harmonic mean](https://en.wikipedia.org/wiki/Harmonic_mean#Weighted_harmonic_mean), if the sum is standardized by the number of edges in the shortest paths. See:
+$$
+H = \frac{\sum_}{\sum_{i\neq v}\frac{}{f_{iv}}}
+$$
+
+```{r}
+c_in <- closeness(pg, vids = V(pg), mode = "in", weights = (df$wt)^-1) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+c_in
+```
+
+The intent of this measure is to identify nodes that can reach (or be reached by) others at a relatively low cost. The length of the paths can be measured in terms of distance, time, or cost for instance. In this example, it is defined as the inverse of the flows: in this way, nodes connected by edges with large flows are deemed to be relatively close to each other, and viceversa.
+
+```{r eval = FALSE}
+c_all <- closeness(pg, vids = V(pg), mode = "all", weights = (df$wt)^-1) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+c_all
+```
+
+Closeness is calculated as follows, for the case of "out" flows (from a node). A high value of closeness indicates a node that reaches other nodes on average by large flows:
+```{r eval = FALSE}
+closeness_out <- closeness(g, vids = V(g), mode = "out", weights = (E(g)$flow)^-1) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+closeness_out <- data.frame(CDUID = closeness_out$rowname, closeness_out = closeness_out$.)
+```
+
+The summary of this measure is:
+```{r}
+summary(closeness_out)
+```
+
+closeness can also be calculated using the "in" flows. A high value of closeness indicates that a node can be reached by other nodes on average by large flows: 
+```{r eval = FALSE}
+closeness_in <- closeness(g, vids = V(g), mode = "in", weights = (E(g)$flow)^-1) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+closeness_in <- data.frame(CDUID = closeness_in$rowname, closeness_in = closeness_in$.)
+```
+
+```{r}
+closeness_in <- closeness(g, vids = V(g), mode = "in", weights = E(g)$flow) %>% 
+  data.frame() %>% 
+  rownames_to_column()
+
+closeness_in <- data.frame(CDUID = closeness_in$rowname, closeness_in = closeness_in$.)
+```
+
+The summary is:
+```{r}
+summary(closeness_in)
+```
+
+To further explore closeness we collect the summary measures in a single dataframe:
+```{r}
+closeness_06_07 <- closeness_in %>%
+  left_join(closeness_out, 
+            by = "CDUID")
+```
+
+Add province by CMA label:
+```{r}
+closeness_06_07 <- closeness_06_07 %>%
+  left_join(vertices, 
+            by = "CDUID")
+```
+
+Create a scatter plot to compare the closeness from ("out") and to ("in"):
+```{r}
+p_closeness <- ggplot(data = closeness_06_07, aes(x = closeness_in, 
+                                         y = closeness_out, 
+                                         color = Province_by_CMA,
+                                         size = (closeness_in + closeness_out),
+                                         text = paste('CD: ', CDUID))) +
+  geom_point() + 
+  geom_abline(intercept = 0, slope = 1)
+```
+
+And render interactive plot:
+```{r}
+ggplotly(p_closeness)
+```
+
+Add to CD geographical object:
+```{r}
+cd_2006.sf <- cd_2006.sf %>%
+  left_join(closeness_06_07, by = "CDUID")
+```
+
+Create a map of closeness to ("out"):
+```{r}
+map_closeness_out <- ggplot(cd_2006.sf) +
+  geom_sf(aes(fill = closeness_out)) +
+  scale_fill_gradient(low = "orange", high = "red", trans = "log") +
+  theme_tufte() +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+
+Render (interactive) map:
+```{r}
+#ggplotly(map_closeness_out)
+```
+
+Create a map of closeness from ("in"):
+```{r}
+map_closeness_in <- ggplot(cd_2006.sf) +
+  geom_sf(aes(fill = closeness_in)) +
+  scale_fill_gradient(low = "orange", high = "red", trans = "log") +
+  theme_tufte() +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+
+Render interactive map:
+```{r}
+#ggplotly(map_closeness_in)
+```
+
+## Circular plots
+
+Circular plots provide an alternative way of plotting flows. A circular plot is composed of tracks that can be used to represent units of analysis, say origins and destinations. Ribbons can then be used to connect origins and destinations. Customizing different aspects of the plot can provide useful insights into flow patterns.
+
+A basic circular plot is shown below, after initializing it with a factor that creates segments or _sectors_ along the track. There is in addition a variable x that runs along the track.
+```{r message=FALSE}
+circos.par("track.height" = 0.1)
+circos.initialize(factors = cd_06_07$Origin_Province_Name_Short, xlim = c(0,1))
+
+circos.track(factors = cd_06_07$Origin_Province_Name_Short, y = cd_06_07$All_total,
+    panel.fun = function(x, y) {
+        circos.text(CELL_META$xcenter, CELL_META$cell.ylim[2] + uy(5, "mm"), 
+            CELL_META$sector.index)
+        circos.axis(labels.cex = 0.6)
+})
+col = rep(c("#FF0000", "#00FF00"), 4)
+#circos.trackPoints(df$factors, df$x, df$y, col = col, pch = 16, cex = 0.5)
+#circos.text(-1, 0.5, "text", sector.index = "a", track.index = 1)
+```
+
+Summarize by province of origin and destination:
+```{r}
+cd_06_07_by_prov <- cd_06_07 %>%
+  group_by(Origin_Province_Name_Short, Destination_Province_Name_Short) %>%
+  summarize(flow = sum(All_total/1000),
+            .groups = "drop") # Population in 1000s
+```
+
+Basic use of chord diagrams in `circlize`:
+```{r}
+circos.clear()
+circos.par(gap.after = 4)
+chordDiagram(cd_06_07_by_prov, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"))
+```
+
+Filter intra-Provincial flows:
+```{r}
+cd_06_07_by_prov_no_intra <- cd_06_07_by_prov %>%
+  dplyr::filter(Origin_Province_Name_Short != Destination_Province_Name_Short)
+```
+
+Repeat basic chord diagram:
+```{r}
+circos.clear()
+circos.par(gap.after = 4)
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"))
+```
+
+
+Set colors:
+```{r}
+circos.clear()
+
+circos.par(gap.after = 4)
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             transparency = 0.5)
+
+
+```
+
+Set transparency:
+```{r}
+circos.clear()
+
+circos.par(gap.after = 4)
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             transparency = 0.4)
+
+
+```
+
+
+Make colors vary by strength of association:
+```{r}
+
+circos.clear()
+
+circos.par(gap.after = 4)
+
+col_fun = colorRamp2(range(cd_06_07_by_prov_no_intra$flow), c("#FFEEEE", "#FF0000"), transparency = 0.5)
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             col = col_fun)
+
+```
+
+Highlight links:
+```{r}
+
+circos.clear()
+
+circos.par(gap.after = 4)
+
+
+col = col_fun(cd_06_07_by_prov_no_intra[[3]])
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+col[cd_06_07_by_prov_no_intra[[3]] < 10] = "#00000000"
+chordDiagram(cd_06_07_by_prov_no_intra, grid.col = grid.col, col = col)
+```
+
+Control visibility:
+```{r}
+circos.clear()
+
+circos.par(gap.after = 4)
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             transparency = 0.5, 
+             link.visible = cd_06_07_by_prov_no_intra[[3]] >= 5)
+
+
+```
+
+Display directionality:
+```{r}
+circos.clear()
+
+circos.par(gap.after = 4)
+
+grid.col = c(BC = "red", AB = "green", YT = "blue",
+    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             transparency = 0.5, 
+             link.visible = cd_06_07_by_prov_no_intra[[3]] >= 10,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow")
+
+
+```
+
+
+```{r}
+circos.clear()
+
+chordDiagram(cd_06_07_by_prov_no_intra, 
+             annotationTrack = c("grid", "axis"),
+             preAllocateTracks = list(
+               track.height = uh(4, "mm"),
+               track.margin = c(uh(4, "mm"), 0)
+               )
+             )
+```
+
+
+Summarize by province of origin and destination:
+```{r}
+cd_06_07_by_prov_by_cma <- cd_06_07 %>%
+  mutate(Origin_Province_by_CMA = paste0(Origin_Province_Name_Short, ":", Origin_CMANAME),
+         Destination_Province_by_CMA = paste0(Destination_Province_Name_Short, ":", Destination_CMANAME)) %>%
+  group_by(Origin_Province_by_CMA, Destination_Province_by_CMA) %>%
+  summarize(flow = sum(All_total/1000),
+            .groups = "drop") # Population in 1000s
+```
+
+
+Filter internal flows:
+```{r}
+cd_06_07_by_prov_by_cma_no_intra <- cd_06_07_by_prov_by_cma %>%
+  dplyr::filter(Origin_Province_by_CMA != Destination_Province_by_CMA)
+```
+
+With internal flows:
+```{r}
+circos.clear()
+circos.par(gap.after = 4)
+
+chordDiagram(cd_06_07_by_prov_by_cma,
+             annotationTrack = c("grid", "axis"),
+             preAllocateTracks = list(track.height = uh(4, "mm"),
+                                      track.margin = c(uh(4, "mm"), 0)
+                                      )
+             )
+
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), sector.index, cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+
+highlight.sector(c("ON:Hamilton", "ON:Other/Non-urban", "ON:Toronto"), track.index = 1, col = "red", 
+    text = "Ontario", cex = 0.8, text.col = "white", niceFacing = TRUE)
+    
+highlight.sector(c("QC:Montreal", "QC:Other/Non-urban"), track.index = 1, col = "green", 
+    text = "Quebec", cex = 0.8, text.col = "white", niceFacing = TRUE)
+
+highlight.sector(c("AB:Calgary", "AB:Edmonton", "AB:Other/Non-urban"), track.index = 1, col = "blue", 
+    text = "Alberta", cex = 0.8, text.col = "white", niceFacing = TRUE)  
+    
+highlight.sector(c("BC:Other/Non-urban", "BC:Vancouver"), track.index = 1, col = "gray", 
+    text = "British Columbia", cex = 0.8, text.col = "black", niceFacing = TRUE)
+```
+
+Without internal flows:
+```{r}
+circos.clear()
+
+chordDiagram(cd_06_07_by_prov_by_cma_no_intra,
+             annotationTrack = c("grid", "axis"),
+             preAllocateTracks = list(track.height = uh(4, "mm"),
+                                      track.margin = c(uh(4, "mm"), 0)
+                                      )
+             )
+
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), sector.index, cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+
+highlight.sector(c("ON:Hamilton", "ON:Other/Non-urban", "ON:Toronto"), track.index = 1, col = "red", 
+    text = "Ontario", cex = 0.8, text.col = "white", niceFacing = TRUE)
+    
+highlight.sector(c("QC:Montreal", "QC:Other/Non-urban"), track.index = 1, col = "green", 
+    text = "Quebec", cex = 0.8, text.col = "white", niceFacing = TRUE)
+
+highlight.sector(c("AB:Calgary", "AB:Edmonton", "AB:Other/Non-urban"), track.index = 1, col = "blue", 
+    text = "Alberta", cex = 0.8, text.col = "white", niceFacing = TRUE)  
+    
+highlight.sector(c("BC:Other/Non-urban", "BC:Vancouver"), track.index = 1, col = "gray", 
+    text = "British Columbia", cex = 0.8, text.col = "black", niceFacing = TRUE)
+```
+
+Without internal flows, and adding directionality:
+```{r}
+circos.clear()
+
+chordDiagram(cd_06_07_by_prov_by_cma_no_intra,
+             annotationTrack = c("grid", "axis"),
+             preAllocateTracks = list(track.height = uh(4, "mm"),
+                                      track.margin = c(uh(4, "mm"), 0)
+                                      ),
+             link.visible = cd_06_07_by_prov_by_cma_no_intra[[3]] >= 10,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow"
+             )
+
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), sector.index, cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+
+highlight.sector(c("ON:Hamilton", "ON:Other/Non-urban", "ON:Toronto"), track.index = 1, col = "red", 
+    text = "Ontario", cex = 0.8, text.col = "white", niceFacing = TRUE)
+    
+highlight.sector(c("QC:Montreal", "QC:Other/Non-urban"), track.index = 1, col = "green", 
+    text = "Quebec", cex = 0.8, text.col = "white", niceFacing = TRUE)
+
+highlight.sector(c("AB:Calgary", "AB:Edmonton", "AB:Other/Non-urban"), track.index = 1, col = "blue", 
+    text = "Alberta", cex = 0.8, text.col = "white", niceFacing = TRUE)  
+    
+highlight.sector(c("BC:Other/Non-urban", "BC:Vancouver"), track.index = 1, col = "gray", 
+    text = "British Columbia", cex = 0.8, text.col = "black", niceFacing = TRUE)
+```
+
+## Use SOM for analysis of flows
+
+Load package:
+```{r warning=FALSE}
+library(SOMbrero) # SOM Bound to Realize Euclidean and Relational Outputs
+```
+
+Obtain shortest paths for outgoing flows. Note that the mode must be "all", otherwise the result is not a relational table as required by SOM (which implies the matrix is symmetric):
+```{r}
+dissim.cd <- shortest.paths(g, to = V(g), mode = "all", weights = (E(g)$flow)^-1)
+```
+
+A self-organizing map can be trained. An issue is that the map (and clusters) will change somewhat at random. For this reason I would like to train many SOMs and then get a consensus clustering system.
+
+First SOM:
+```{r}
+mis.som <- trainSOM(x.data = dissim.cd, 
+                    dimension=c(4, 5),
+                    type = "relational", 
+                    nb.save = 10,
+                    init.proto = "random", 
+                    radius.type = "letremy")
+#plot(mis.som, what = "energy")
+```
+
+Store results of first SOM and train 99 more:
+```{r}
+cluster_results <- data.frame(R1 = factor(mis.som$clustering))
+
+for(i in 2:100){
+  mis.som <- trainSOM(x.data = dissim.cd, 
+                    dimension=c(4, 5),
+                    type = "relational", 
+                    nb.save = 10,
+                    init.proto = "random", 
+                    radius.type = "letremy")
+  cluster_results[,paste("R", i, sep = "")] <- factor(mis.som$clustering)
+}
+```
+
+
+To obtain a consensus clustering system I will then pass the clusters from the SOMs to a k-modes algorithgm. Load package `klaR` for k-modes clustering:
+```{r}
+library(klaR) # Classification and Visualization
+```
+
+K-modes clustering, request 15 clusters:
+```{r}
+kmc <- kmodes(cluster_results, 15)
+```
+
+Check results:
+```{r}
+kmc$cluster
+```
+
+Tabulate cluster membership:
+```{r}
+table(kmc$cluster)
+```
+
+```{r}
+cluster_classes <- data.frame(CDUID = closeness_in$CDUID, 
+                              cluster = factor(kmc$cluster,
+                                                labels = c("C1", "C2", "C3", "C4", "C5", "C6", "C7",
+                                                           "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15")))
+```
+
+Join to geographical object for mapping:
+```{r}
+cd_2006.sf <- cd_2006.sf %>%
+  left_join(cluster_classes, by = "CDUID")
+```
+
+Join to flows table:
+```{r}
+cd_06_07 <- cd_06_07 %>%
+  left_join(rename(cluster_classes, Origin_CDUID = CDUID, Origin_Cluster = cluster), by = "Origin_CDUID") %>%
+  left_join(rename(cluster_classes, Destination_CDUID = CDUID, Destination_Cluster = cluster), by = "Destination_CDUID") 
+```
+
+Summarize by cluster of origin and destination:
+```{r}
+cd_06_07_by_cluster <- cd_06_07 %>%
+  group_by(Origin_Cluster, Destination_Cluster) %>%
+  summarize(flow = sum(All_total/1000)) # Population in 1000s
+```
+
+Assign colors:
+```{r}
+cluster_col <- c(C1 = "coral",
+                 C2 = "bisque",
+                 C3 = "blue",
+                 C4 = "brown",
+                 C5 = "gray",
+                 C6 = "hotpink",
+                 C7 = "chocolate",
+                 C8 = "aliceblue",
+                 C9 = "cornflowerblue",
+                 C10 = "green",
+                 C11 = "darkorange",
+                 C12 = "deeppink",
+                 C13 = "firebrick",
+                 C14 = "gold",
+                 C15 = "darkgoldenrod",
+                 C16 = "burlywood",
+                 C17 = "maroon",
+                 C18 = "orange",
+                 C19 = "cyan",
+                 C20 = "orchid")
+```
+
+Use circular plot to visualize flows by cluster:
+```{r}
+circos.clear()
+
+chordDiagram(cd_06_07_by_cluster, 
+             #order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = cluster_col,
+             transparency = 0.5, 
+             #link.visible = cd_06_07_by_prov_no_intra[[3]] >= 10,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow",
+             big.gap = 10,
+             small.gap = 1)
+```
+
+Filter internal flows:
+```{r}
+cd_06_07_by_cluster_no_intra <- cd_06_07_by_cluster %>%
+  dplyr::mutate(flow = ifelse(Origin_Cluster != Destination_Cluster, flow, 0))
+```
+
+Plot:
+```{r}
+circos.clear()
+
+circos.par(gap.after = 4)
+
+#grid.col = c(BC = "red", AB = "green", YT = "blue",
+#    SK = "pink", NT = "black", MB = "grey", NU = "cyan", ON = "red", QC = "blue", NB = "grey",
+#    NS = "grey", PE = "grey", NL = "yellow")
+
+chordDiagram(cd_06_07_by_cluster_no_intra, 
+             #order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = cluster_col,
+             transparency = 0.5, 
+             #link.visible = cd_06_07_by_prov_no_intra[[3]] >= 10,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow")
+
+```
+
+Plot in proportion:
+
+Calculate the proportion of flows in the second plot with respect to the first:
+```{r}
+sum(cd_06_07_by_cluster_no_intra$flow)/sum(cd_06_07_by_cluster$flow)
+```
+
+Plot side by side including internal and no internal flows, keep in proportion:
+```{r}
+
+layout(matrix(1:2, 1, 2))
+
+gap = calc_gap(cd_06_07_by_cluster, cd_06_07_by_cluster_no_intra, big.gap = 10, small.gap = 1)
+
+# Plot cluster flows
+circos.clear()
+circos.par(gap.after = 1)
+
+chordDiagram(cd_06_07_by_cluster, 
+             grid.col = cluster_col,
+             transparency = 0.5, 
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow")
+
+# Plot cluster flows removing internal flows
+circos.clear()
+circos.par(gap.after = gap/18 + 1)
+
+chordDiagram(cd_06_07_by_cluster_no_intra,
+             grid.col = cluster_col,
+             directional = 1, 
+             transparency = 0.5,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow")
+```
+
+Notice how clusters C2, C3, and C6, C7 are the majority of flows. Map:
+```{r eval=FALSE}
+ggplot(cd_2006.sf) +
+  geom_sf() +
+  geom_sf(data = filter(cd_2006.sf, cluster == "C2" | cluster =="C3" | cluster == "C6" | cluster == "C7"), aes(fill = cluster)) +
+  theme_tufte() +
+  scale_fill_manual(values = c("bisque", "blue", "hotpink", "chocolate")) +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+
+C2 = "bisque",
+                 C3 = "blue",
+                 C4 = "brown",
+                 C5 = "gray",
+                 C6 = "hotpink",
+                 C7 = "chocolate",
+
+
+Then, notice how C3 and C13 are the clusters with most inter-cluster interaction. Map:
+```{r eval=FALSE}
+ggplot(cd_2006.sf) +
+  geom_sf() +
+  geom_sf(data = filter(cd_2006.sf, cluster == "C3" | cluster =="C13"), aes(fill = cluster)) +
+  theme_tufte() +
+  scale_fill_manual(values = c("blue", "firebrick")) +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+
+Also C2 to C7:
+```{r eval=FALSE}
+ggplot(cd_2006.sf) +
+  geom_sf() +
+  geom_sf(data = filter(cd_2006.sf, cluster == "C2" | cluster =="C7"), aes(fill = cluster)) +
+  theme_tufte() +
+  scale_fill_manual(values = c("bisque", "chocolate")) +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+

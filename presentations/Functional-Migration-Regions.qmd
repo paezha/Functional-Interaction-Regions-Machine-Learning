@@ -1,0 +1,666 @@
+---
+title: "A machine learning approach to obtain functional migration regions"
+author: "Antonio Paez, McMaster University"
+format: 
+  revealjs:
+    slide-number: true
+    theme: dark
+    footer: "North American Regional Science Meetings -- Montreal -- November 9-12, 2022 "
+---
+
+```{r load-packages}
+#| include: false
+library(circlize) # Circular Visualization
+library(dplyr) # A Grammar of Data Manipulation
+library(ggmap) # Spatial Visualization with ggplot2
+library(ggplot2) # Create Elegant Data Visualisations Using the Grammar of Graphics
+library(ggraph) # An Implementation of Grammar of Graphics for Graphs and Networks
+library(ggthemes) # Extra Themes, Scales and Geoms for 'ggplot2'
+library(here) # A Simpler Way to Find Your Files
+library(igraph) # Network Analysis and Visualization
+library(kableExtra) # Construct Complex Table with 'kable' and Pipe Syntax
+library(klaR) # Classification and Visualization
+#library(leaflet) # Create Interactive Web Maps with the JavaScript 'Leaflet' Library
+library(plotly) # Create Interactive Web Graphics via 'plotly.js'
+#library(readr) # Read Rectangular Text Data
+library(sf) # Simple Features for R
+library(SOMbrero) # SOM Bound to Realize Euclidean and Relational Outputs
+library(tibble) # Simple Data Frames
+```
+
+```{r load-data}
+#| include: false
+load(paste0(here::here(), "/data-inputs/canada_provinces.rda"))
+load(paste0(here::here(), "/data-inputs/cd_06_07.rda"))
+load(paste0(here::here(), "/data-inputs/cd_2006.rda"))
+```
+
+```{r toy-example}
+#| include: false 
+df <- data.frame(a = c(0, 0, 0, 0, 1, 3),
+                 b = c(1, 2, 3, 4, 2, 4),
+                 wt = c(100, 10, 200, 10, 150, 100),
+                 p1 = c("gray", "gray", "red", "gray", "gray", "red"),
+                 p2 = c("red", "gray", "gray", "gray", "red", "gray"))
+nod <- data.frame(node = c(0:4))
+pg <- graph_from_data_frame(d = df, 
+                            vertices = nod,
+                            directed = TRUE)
+```
+
+```{r graph-of-canadian-cd}
+#| include: false
+g <- cd_06_07 |> 
+  dplyr::select(Origin_CDUID, Destination_CDUID, flow = All_total) |>
+  graph_from_data_frame(directed = TRUE, vertices = NULL)
+```
+
+```{r vertices-of-g}
+#| include: false
+vertices <- cd_06_07 |>
+  transmute(CDUID = Origin_CDUID, Province_by_CMA = paste0(Origin_Province_Name_Short, ":", Origin_CMANAME)) |>
+  distinct()
+```
+
+```{r}
+#| include: false
+
+# Obtain shortest paths for outgoing flows. Note that the mode must be "all", otherwise the result is not a relational table as required by SOM (which implies the matrix is symmetric):
+dissim.cd <- shortest.paths(g, to = V(g), mode = "all", weights = (E(g)$flow)^-1)
+```
+
+```{r}
+#| eval: false
+#| include: false
+
+#A self-organizing map can be trained. An issue is that the map (and clusters) will change somewhat at random. For this reason I would like to train many SOMs and then get a consensus clustering system. First SOM:
+mis.som <- trainSOM(x.data = dissim.cd, 
+                    dimension=c(4, 5),
+                    type = "relational", 
+                    nb.save = 10,
+                    init.proto = "random", 
+                    radius.type = "letremy")
+```
+
+```{r}
+#| eval: false
+#| include: false
+
+cluster_results <- data.frame(R1 = factor(mis.som$clustering))
+
+# Store results of first SOM and train 99 more:
+for(i in 2:100){
+  mis.som <- trainSOM(x.data = dissim.cd, 
+                    dimension=c(4, 5),
+                    type = "relational", 
+                    nb.save = 10,
+                    init.proto = "random", 
+                    radius.type = "letremy")
+  cluster_results[,paste("R", i, sep = "")] <- factor(mis.som$clustering)
+}
+```
+
+```{r}
+#| eval: false
+#| include: false
+
+#To obtain a consensus clustering system I will then pass the clusters from the SOMs to a k-modes algorithm. K-modes clustering, request 15 clusters:
+kmc <- kmodes(cluster_results, 15)
+
+save(kmc, 
+     file = paste0(here::here(), "/data-outputs/kmc.rda"),
+     compress = "bzip2",
+     version = 2,
+     ascii = FALSE)
+```
+
+```{r load-results-clustering}
+#| include: false
+load(paste0(here::here(), "/data-outputs/kmc.rda"))
+```
+
+# Motivation
+
+## What I am trying to do
+
+I was struggling with visualizations of large origin-destination matrices.
+
+- Desire lines quickly become too busy
+- That got me thinking about segmentation techniques
+- Hence _functional_ interaction regions (not a new idea)
+- But maybe a novel approach?
+
+::: {.notes}
+This is not a new idea: there are commuter fields and metropolitan regions are defined in such a way as to contain most daily trips. For example, see the [forward and reverse commuting flow rules](https://www150.statcan.gc.ca/n1/pub/92-195-x/2011001/geo/cma-rmr/def-eng.htm) used by Statistics Canada.
+:::
+
+## Punch line
+
+Measure proximity (_closeness_ in social network parlance) in _flow space_.
+
+Use a self-organizing map (SOM) to cluster regions based on their closeness in flow space.
+
+# Concepts
+
+## Small system of regions with a directed network
+
+:::: {.columns}
+
+::: {.column width="60%"}
+
+```{r plot-toy-example-graph-1}
+#| echo: false
+#| fig-height: 8
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     #edge.label = df$wt, 
+     #edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="40%"}
+
+Node $0$...is it closer to:  
+  
+- Node $1$?  
+- Node $2$?  
+  
+Node $3$...is it closer to:  
+  
+- Node $0$?  
+- Node $4$?
+:::
+
+::::
+
+## Centrality in a network
+
+:::: {.columns}
+
+::: {.column width="60%"}
+
+```{r plot-toy-example-graph-2}
+#| echo: false
+#| fig-height: 8
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     #edge.label = df$wt, 
+     #edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="40%"}
+
+$$
+\text{farness} = \sum_{i\neq v}d_{iv}
+$$
+$$
+\text{closeness} = \frac{1}{\sum_{i\neq v}d_{iv}}
+$$
+:::
+
+::::
+
+## Network with flows
+
+:::: {.columns}
+
+::: {.column width="60%"}
+
+Flows between regions
+```{r plot-toy-example-flows}
+#| echo: false
+#| fig-height: 8
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     edge.label = df$wt, 
+     edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="40%"}
+
+Node $0$...is it closer to:  
+
+- Node $1$?  
+- Node $2$?  
+  
+Node $3$...is it closer to:  
+  
+- Node $0$?  
+- Node $4$?
+:::
+
+::::
+
+## Flows
+
+Define distance in flow space:  
+
+$$
+d_{iv} = \frac{1}{f_{iv}}
+$$
+
+Then:  
+
+$$
+\text{closeness} = \frac{1}{\sum_{i\neq v}\frac{1}{f_{iv}}}
+$$
+
+## Closeness (out)
+
+:::: {.columns}
+
+::: {.column width="40%"}
+```{r plot-toy-example-out}
+#| echo: false
+#| fig-height: 10
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     edge.label = df$wt, 
+     edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="60%"}
+
+Node $0$:
+$$
+\frac{1}{\underbrace{\frac{1}{100}}_{0-1} + \underbrace{\frac{1}{100}  + \frac{1}{150}}_{0-2} + \underbrace{\frac{1}{200}}_{0-3} + \underbrace{\frac{1}{200} + \frac{1}{100}}_{0-4}} = 21.429
+$$
+
+```{r check}
+#| include: false
+
+# Closeness of Node 0
+(100^-1 + 100^-1 + 150^-1 + 200^-1 + 200^-1 + 100^-1)^-1
+```
+
+Node $1$:
+$$
+\frac{1}{\underbrace{\frac{1}{150}}_{1-2}} = 150
+$$
+
+:::
+
+::::
+
+## Closeness (out)
+
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r plot-toy-example-out-2}
+#| echo: false
+#| fig-height: 10
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     edge.label = df$wt, 
+     edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="40%"}
+
+```{r table-toy-out}
+#| echo: false
+c_out <- closeness(pg, vids = V(pg), mode = "out", weights = (df$wt)^-1) |> 
+  data.frame() |> 
+  rownames_to_column()
+
+kable(c_out,
+      col.names = c("node", "closeness"),
+      digits = 3)
+```
+:::
+
+::::
+
+## Closeness as a harmonic average
+
+The expression:  
+
+$$
+\frac{1}{\sum_{i\neq v}\frac{1}{f_{iv}}}
+$$
+Is the _weighted_ harmonic mean of the flows needed to reach all nodes (or to be reached).
+
+## Closeness (in)
+
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r plot-toy-example-in}
+#| echo: false
+#| fig-height: 10
+set.seed(136)
+
+# plot function with edge.label added
+plot(pg, 
+     vertex.label.cex = 3,
+     edge.label = df$wt, 
+     edge.label.cex = 3,
+     edge.width = 5,
+     edge.arrow.size = 3)
+```
+:::
+
+::: {.column width="40%"}
+```{r table-in}
+#| echo: false
+c_in <- closeness(pg, vids = V(pg), mode = "in", weights = (df$wt)^-1) |> 
+  data.frame() |> 
+  rownames_to_column()
+
+kable(c_in,
+      col.names = c("node", "closeness"),
+      digits = 3)
+```
+:::
+
+::::
+
+## Closeness (all)
+
+The same, but with out and in flows.
+
+## Decompose closeness (all flows)
+
+$$
+\begin{bmatrix}
+0 & \frac{1}{f_{12}} & \cdots\\
+\frac{1}{f_{21}} & 0 & \cdots\\
+\vdots & \vdots & \cdots\\
+\frac{1}{f_{n1}} & \cdots & 0
+\end{bmatrix} =
+\begin{bmatrix}
+\sum_j\frac{1}{f_{1j}} = \text{closeness}_1\\
+\sum_j\frac{1}{f_{2j}} = \text{closeness}_2\\
+\cdots\\
+\sum_j\frac{1}{f_{nj}} = \text{closeness}_n
+\end{bmatrix}
+$$
+
+## Clustering
+
+- Feed the matrix of decomposed closeness to a Self-Organizing Map algorithm
+- Analyze as a dissimilarity matrix
+
+# Empirical example
+
+## Canadian domestic migration flows (Census Divisions, 2006-2007)
+
+```{r}
+#| include: false
+
+# Summarize by province of origin and destination:
+cd_06_07_by_prov <- cd_06_07 %>%
+  group_by(Origin_Province_Name_Short, Destination_Province_Name_Short) %>%
+  summarize(flow = sum(All_total/1000),
+            .groups = "drop") # Population in 1000s
+```
+
+```{r}
+#| echo: false
+
+# Chord diagram in `circlize`:
+circos.clear()
+circos.par(gap.after = 4)
+
+#par(
+#  bg = "black"     # background color
+#) 
+
+grid.col = c(BC = "orange", AB = "green", YT = "blue",
+    SK = "grey", NT = "grey", MB = "grey", NU = "grey", ON = "red", QC = "blue", NB = "grey",
+    NS = "grey", PE = "grey", NL = "grey")
+
+chordDiagram(cd_06_07_by_prov, 
+             order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = grid.col,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow")
+```
+
+## Closeness of Canada's Census Divisions
+
+```{r}
+#| include: false
+
+# Closeness is calculated as follows, for the case of "out" flows (from a node). A high value of closeness indicates a node that reaches other nodes on average by large flows:
+closeness_out <- closeness(g, vids = V(g), mode = "out", weights = (E(g)$flow)^-1)
+closeness_out <- data.frame(CDUID = names(closeness_out), closeness_out = closeness_out)
+```
+
+```{r}
+#| include: false
+
+#The summary of this measure is:
+summary(closeness_out)
+```
+
+```{r}
+#| include: false
+
+# closeness can also be calculated using the "in" flows. A high value of closeness indicates that a node can be reached by other nodes on average by large flows: 
+closeness_in <- closeness(g, vids = V(g), mode = "in", weights = (E(g)$flow)^-1)
+closeness_in <- data.frame(CDUID = names(closeness_in), closeness_in = closeness_in)
+```
+
+```{r}
+#| include: false
+
+#The summary is:
+summary(closeness_in)
+```
+
+```{r}
+closeness_all <- closeness(g, vids = V(g), mode = "all", weights = (E(g)$flow)^-1)
+closeness_all <- data.frame(CDUID = names(closeness_all), closeness_all = closeness_all)
+```
+
+```{r}
+#| include: false
+
+#The summary is:
+summary(closeness_all)
+```
+
+```{r}
+#| include: false
+
+# To further explore closeness we collect the summary measures in a single dataframe:
+closeness_06_07 <- closeness_in |>
+  left_join(closeness_out, 
+            by = "CDUID") |>
+  left_join(closeness_all, 
+            by = "CDUID")
+```
+
+```{r}
+#| include: false
+
+# Add province by CMA label:
+closeness_06_07 <- closeness_06_07 |>
+  left_join(vertices, 
+            by = "CDUID")
+```
+
+```{r}
+#| include: false
+# Create a scatter plot to compare the closeness from ("out") and to ("in"):
+p_closeness <- ggplot(data = closeness_06_07, aes(x = closeness_in, 
+                                         y = closeness_out, 
+                                         color = Province_by_CMA,
+                                         size = closeness_all,
+                                         text = paste('CD: ', CDUID))) +
+  geom_point() + 
+  geom_abline(intercept = 0, slope = 1)
+```
+
+```{r}
+#| echo: false
+#| fig-height: 5
+
+# Render interactive plot:
+ggplotly(p_closeness)
+```
+
+## Flows by SOM-based cluster
+
+```{r}
+#| include: false
+cluster_classes <- data.frame(CDUID = closeness_in$CDUID, 
+                              cluster = factor(kmc$cluster,
+                                                labels = c("C1", "C2", "C3", "C4", "C5", "C6", "C7",
+                                                           "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15")))
+```
+
+```{r}
+#| echo: false
+
+# Join to geographical object for mapping:
+cd_2006 <- cd_2006 %>%
+  left_join(cluster_classes, by = "CDUID")
+```
+
+```{r}
+#| include: false
+
+# Join to flows table:
+cd_06_07 <- cd_06_07 %>%
+  left_join(rename(cluster_classes, Origin_CDUID = CDUID, Origin_Cluster = cluster), by = "Origin_CDUID") %>%
+  left_join(rename(cluster_classes, Destination_CDUID = CDUID, Destination_Cluster = cluster), by = "Destination_CDUID") 
+```
+
+```{r}
+#| include: false
+
+#Summarize by cluster of origin and destination:
+cd_06_07_by_cluster <- cd_06_07 %>%
+  group_by(Origin_Cluster, Destination_Cluster) %>%
+  summarize(flow = sum(All_total/1000)) # Population in 1000s
+```
+
+```{r}
+#| include: false
+
+# Assign colors:
+cluster_col <- c(C1 = "coral",
+                 C2 = "bisque",
+                 C3 = "blue",
+                 C4 = "brown",
+                 C5 = "gray",
+                 C6 = "hotpink",
+                 C7 = "chocolate",
+                 C8 = "aliceblue",
+                 C9 = "cornflowerblue",
+                 C10 = "green",
+                 C11 = "darkorange",
+                 C12 = "deeppink",
+                 C13 = "gold",
+                 C14 = "firebrick",
+                 C15 = "darkgoldenrod")
+```
+
+```{r}
+#| echo: false
+
+# Use circular plot to visualize flows by cluster:
+circos.clear()
+
+chordDiagram(cd_06_07_by_cluster, 
+             #order = c("BC", "AB", "YT", "SK", "NT", "MB", "NU", "ON", "QC", "NB", "NS", "PE", "NL"),
+             grid.col = cluster_col,
+             transparency = 0.5, 
+             #link.visible = cd_06_07_by_prov_no_intra[[3]] >= 10,
+             directional = 1,
+             diffHeight = uh(5, "mm"),
+             direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow",
+             big.gap = 10,
+             small.gap = 1)
+```
+
+## SOM-based clusters
+
+```{r map-of-clusters}
+#| include: false
+
+cd_2006_simple <- cd_2006 |> 
+  st_simplify(dTolerance = 5e3) |> 
+  st_cast(to = "MULTIPOLYGON")
+
+canada_provinces_simple <- canada_provinces |> 
+  st_simplify(dTolerance = 5e3) |> 
+  st_cast(to = "MULTIPOLYGON")
+  
+
+# Notice how clusters C2, C3, and C6, C7 are the majority of flows. Map:
+cluster_map <- ggplot() +
+  geom_sf(data = cd_2006_simple,
+          aes(fill = cluster),
+          color = "white",
+          size = 0.1) +
+  geom_sf(data = canada_provinces_simple,
+          fill = NA,
+          color = "black",
+          size = 0.5) +
+  scale_fill_manual(values = # Assign colors:
+                  c("C1" = "coral",
+                 "C2" = "bisque",
+                 "C3" = "blue",
+                 "C4" = "brown",
+                 "C5" = "gray",
+                 "C6" = "hotpink",
+                 "C7" = "chocolate",
+                 "C8" = "aliceblue",
+                 "C9" = "cornflowerblue",
+                 "C10" = "green",
+                 "C11" = "darkorange",
+                 "C12" = "deeppink",
+                 "C13" = "gold",
+                 "C14" = "firebrick",
+                 "C15" = "darkgoldenrod")) +
+  theme_tufte() +
+  theme(panel.grid.major = element_line(colour = "white"))
+```
+
+```{r}
+#| echo: false
+#| fig-height: 6
+
+# Render interactive plot:
+ggplotly(cluster_map)
+```
+
+# Conclusion
+
+# Discussion
